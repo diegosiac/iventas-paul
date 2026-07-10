@@ -14,7 +14,13 @@ export function registerTasksTool(server: McpServer, client: PaulClient): void {
         "queue, estimated minutes, overdue info, requester, client, and week. " +
         "Call this FIRST to find the task id that matches the work performed, " +
         "before starting or closing anything. Note: PAUL only allows starting " +
-        "the first pending task in queue order.",
+        "the first pending task in queue order. Also returned: moves_left (the " +
+        "weekly reorder budget paul_reorder_task spends from), budget_ok " +
+        "(false = PAUL's AI spend cap is exhausted; fallback flows apply), ro " +
+        "(true = the session is READ-ONLY and ALL writes will 403), and " +
+        "pending_red_gate (an unresolved team-visible red flag — resolve it " +
+        "via paul_resolve_red_gate). Do NOT poll this tool in a loop: the " +
+        "state endpoint has server-side side effects (coach messages, nudges).",
       inputSchema: {},
     },
     async () => {
@@ -42,8 +48,10 @@ export function registerTasksTool(server: McpServer, client: PaulClient): void {
           user: state.user.name,
           week: state.week,
           summary: { total: tasks.length, byStatus: counts },
-          priorityMovesLeft: state.moves_left,
-          aiBudgetOk: state.budget?.ok ?? true,
+          moves_left: state.moves_left,
+          budget_ok: state.budget?.ok ?? true,
+          ro: state.ro ?? false,
+          pending_red_gate: state.pending_red_gate ?? null,
           tasks,
         });
       } catch (err) {

@@ -11,6 +11,8 @@ import { registerStartTaskTool } from "./tools/start-task.js";
 import { registerGetCheckpointTool } from "./tools/get-checkpoint.js";
 import { registerSubmitCheckpointTool } from "./tools/submit-checkpoint.js";
 import { registerRegisterTaskTool } from "./tools/register-task.js";
+import { registerReorderTaskTool } from "./tools/reorder-task.js";
+import { registerRedGateTool } from "./tools/red-gate.js";
 import { registerChatTool } from "./tools/chat.js";
 
 async function main(): Promise<void> {
@@ -23,6 +25,8 @@ async function main(): Promise<void> {
   registerGetCheckpointTool(server, client);
   registerSubmitCheckpointTool(server, client);
   registerRegisterTaskTool(server, client);
+  registerReorderTaskTool(server, client);
+  registerRedGateTool(server, client);
   registerChatTool(server, client);
 
   await server.connect(new StdioServerTransport());

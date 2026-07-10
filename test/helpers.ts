@@ -1,4 +1,6 @@
 import { vi, type Mock } from "vitest";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolResult } from "../src/tools/shared.js";
 
 /** Builds a JSON Response, optionally with a Set-Cookie header. */
 export function jsonResponse(
@@ -46,6 +48,25 @@ export function callInfo(mock: Mock, index: number): {
     headers,
     body: init?.body ? JSON.parse(String(init.body)) : undefined,
   };
+}
+
+/**
+ * Minimal McpServer stand-in that captures the handler a register*Tool()
+ * function installs, so tests can invoke the tool directly.
+ */
+export function captureToolHandler<C>(
+  register: (server: McpServer, client: C) => void,
+  client: C,
+): (args: Record<string, unknown>) => Promise<ToolResult> {
+  let handler: unknown;
+  const server = {
+    registerTool: (_name: string, _config: unknown, h: unknown) => {
+      handler = h;
+    },
+  } as unknown as McpServer;
+  register(server, client);
+  if (handler === undefined) throw new Error("register did not install a tool handler");
+  return handler as (args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
 export const TEST_ENV = {

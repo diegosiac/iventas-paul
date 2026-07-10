@@ -326,6 +326,107 @@ describe("registerTask", () => {
     expect(result.paulReply).toBeNull();
   });
 
+  it("rejects a title containing 'normal' before any network call", async () => {
+    // Empty fetch sequence: the guard must fire before state() or coach_chat.
+    const mock = mockFetchSequence([]);
+
+    const result = await registerTask(makeClient(), "Corregir flujo normal de login", "media");
+
+    expect(result.ok).toBe(false);
+    expect(result.titleRejected).toBe(true);
+    expect(result.error).toMatch(/"normal"/);
+    expect(result.paulReply).toBeNull();
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a title containing 'urgente' before any network call", async () => {
+    const mock = mockFetchSequence([]);
+
+    const result = await registerTask(makeClient(), "Tarea urgente de pagos", "alta");
+
+    expect(result.ok).toBe(false);
+    expect(result.titleRejected).toBe(true);
+    expect(result.error).toMatch(/"urgente"/);
+    expect(result.paulReply).toBeNull();
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a title containing the phrase 'sin prisa'", async () => {
+    const mock = mockFetchSequence([]);
+
+    const result = await registerTask(
+      makeClient(),
+      "Cerrar el ticket sin prisa esta semana",
+      "baja",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.titleRejected).toBe(true);
+    expect(result.error).toMatch(/"sin prisa"/);
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("rejects ABM-style titles ('Dar de alta ...') — intentional tradeoff", async () => {
+    // 'alta'/'baja' in ABM titles would also match PAUL's server-side
+    // detect_urgency, where a stale pending_assign makes them commit a
+    // DIFFERENT task with no undo handle. Rejecting up front and asking the
+    // agent to rephrase (e.g. "Habilitar X" / "Desactivar X") is deliberate.
+    const mock = mockFetchSequence([]);
+
+    const result = await registerTask(
+      makeClient(),
+      "Dar de alta el endpoint de facturación",
+      "media",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.titleRejected).toBe(true);
+    expect(result.error).toMatch(/"alta"/);
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("accepts 'multimedia' — \\b keeps 'media' from matching inside a word", async () => {
+    mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse(stateWith([OLD_TASK])), // state before
+      jsonResponse(URGENCY_QUESTION), // chat 1: PAUL asks urgency
+      jsonResponse({ reply: "Listo, urgencia media.", ai: true, learned: false, assigned: true }),
+      jsonResponse(
+        stateWith([
+          OLD_TASK,
+          { id: 60, title: "multimedia", status: "pending", priority: 2, estMin: 60 },
+        ]),
+      ), // state after
+    ]);
+
+    const result = await registerTask(makeClient(), "multimedia", "media");
+
+    expect(result.ok).toBe(true);
+    expect(result.taskId).toBe(60);
+    expect(result.titleRejected).toBeUndefined();
+  });
+
+  it("accepts 'Bajar el bundle' — 'baja' needs a word boundary and 'Bajar' has none", async () => {
+    mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse(stateWith([OLD_TASK])), // state before
+      jsonResponse(URGENCY_QUESTION), // chat 1: PAUL asks urgency
+      jsonResponse({ reply: "Listo, urgencia media.", ai: true, learned: false, assigned: true }),
+      jsonResponse(
+        stateWith([
+          OLD_TASK,
+          { id: 61, title: "Bajar el bundle", status: "pending", priority: 2, estMin: 60 },
+        ]),
+      ), // state after
+    ]);
+
+    const result = await registerTask(makeClient(), "Bajar el bundle", "media");
+
+    expect(result.ok).toBe(true);
+    expect(result.taskId).toBe(61);
+    expect(result.titleRejected).toBeUndefined();
+  });
+
   it("never sends urgency words in the opening message (session hijack guard)", async () => {
     const mock = mockFetchSequence([
       jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),

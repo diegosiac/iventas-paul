@@ -9,12 +9,21 @@ export function registerSubmitCheckpointTool(server: McpServer, client: PaulClie
     {
       title: "Submit PAUL checkpoint answers",
       description:
-        "Submit answers to PAUL's validation questions to close a task. " +
+        "Submit answers to PAUL's validation questions to close a task. HARD " +
+        "RULES: NEVER submit for a task that was not actually started and " +
+        "worked on — the server does NOT check task status and would happily " +
+        "record a completion with zero recorded work, which is dishonest and " +
+        "team-visible. To avoid the team-visible too_fast red flag the task " +
+        "needs at least 2 minutes of effective time between start and close. " +
         "Write answers using the REAL context of the work performed in this " +
         "session (what was done, files, PRs, outcomes) — substantive, concrete " +
         "answers. Never generic filler. Pair each answer with the exact question " +
         "text returned by paul_get_checkpoint. Returns PAUL's verdict: " +
         "approved=true closes the task (or hands it off to the requester); " +
+        "if the verdict contains a red_gate object, resolve it IMMEDIATELY " +
+        "with paul_resolve_red_gate. If the task was assigned by someone else, " +
+        "approval parks it in status 'confirm' until the requester confirms — " +
+        "that is normal, do NOT retry. " +
         "approved=false includes ONE concrete improvement PAUL wants — add that " +
         "specific detail to the weak answer and retry ONCE (the evaluator is " +
         "lenient from the 2nd attempt; 'attempt' in the response tracks this). " +

@@ -39,7 +39,14 @@ export interface RegisterResult {
    * Check the task list (paul_tasks) before retrying.
    */
   uncertain?: boolean;
-  /** Transport error message when `uncertain` is set. */
+  /**
+   * The title was rejected BEFORE any network call: it contains a word
+   * matched by detect_urgency() in lib/helpers.php, which could commit a
+   * stale pending assignment sitting in the server session. `error` names
+   * the offending word; rephrase the title and retry.
+   */
+  titleRejected?: true;
+  /** Error message when `uncertain` or `titleRejected` is set. */
   error?: string;
   /** PAUL's last reply verbatim — preserved so the caller can react; null when no reply arrived. */
   paulReply: string | null;
@@ -54,6 +61,17 @@ export interface RegisterResult {
 function openingMessage(title: string): string {
   return `Necesito registrar una tarea nueva en mi lista, es para mí: "${title}".`;
 }
+
+/**
+ * Mirror of detect_urgency() in lib/helpers.php:1007-1013 — \b-bounded and
+ * case-insensitive, with 'moderad' matching as a prefix (moderada, moderado,
+ * ...). The wrapper text of openingMessage() is urgency-free, but the TITLE
+ * is interpolated into it: a title containing any of these words would let
+ * the NEXT coach_chat message commit a stale $_SESSION['pending_assign']
+ * instead of registering our task, so such titles are rejected up front.
+ */
+const URGENCY_WORD_RE =
+  /\b(alta|urgente|urge|prioritario|media|normal|moderad\w*|regular|baja|sin prisa|cuando puedas|no urge|low)\b/i;
 
 /**
  * Heuristic: does PAUL's reply ask for the urgency level? Matches the real
@@ -128,6 +146,23 @@ export async function registerTask(
   title: string,
   urgency: Urgency,
 ): Promise<RegisterResult> {
+  // Pre-flight guard, BEFORE any network call: an urgency-trigger word in the
+  // title travels inside the opening message and detect_urgency() would read
+  // it as an urgency answer, committing any stale pending assignment sitting
+  // in the server session (lib/helpers.php:1007-1013).
+  const urgencyWord = URGENCY_WORD_RE.exec(title)?.[1];
+  if (urgencyWord !== undefined) {
+    return {
+      ok: false,
+      titleRejected: true,
+      error:
+        `The title contains an urgency-trigger word ("${urgencyWord}") that could make ` +
+        "PAUL's session commit a stale pending assignment instead of this task. " +
+        "Rephrase the title without it and retry.",
+      paulReply: null,
+    };
+  }
+
   const before = await client.state();
   const existingIds = new Set(before.tasks.map((t) => t.id));
 
@@ -245,7 +280,11 @@ export function registerRegisterTaskTool(server: McpServer, client: PaulClient):
         "before retrying; a blind retry can duplicate it. Plain { ok: false } " +
         "means the dialogue did not converge — read paulReply and react (e.g. " +
         "retry with a clearer title, or use paul_chat to continue the " +
-        "conversation). Keep titles short, concrete and action-oriented. Note: " +
+        "conversation). Keep titles short, concrete and action-oriented, and " +
+        "NEVER include urgency words (alta/media/baja/urgente/normal/regular/" +
+        "low/...): such titles are rejected up front ({ ok: false, " +
+        "titleRejected: true }, no API call) because they could make PAUL's " +
+        "session commit a stale pending assignment — rephrase and retry. Note: " +
         "PAUL may slightly reword the title. Use this when the user finished work " +
         "that has no matching task yet; afterwards run the close flow " +
         "(paul_start_task, paul_get_checkpoint, paul_submit_checkpoint).",

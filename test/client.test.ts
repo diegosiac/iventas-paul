@@ -172,6 +172,84 @@ describe("PaulClient actions", () => {
   });
 });
 
+describe("PaulClient.reorderTask", () => {
+  it("posts { id, to, reason } to action=reorder_task and returns the payload", async () => {
+    const mock = mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({ ok: true, moves_left: 4 }),
+    ]);
+    const client = makeClient();
+    const res = await client.reorderTask(7, 0, "Blocked release depends on this task");
+    expect(res).toEqual({ ok: true, moves_left: 4 });
+    const call = callInfo(mock, 1);
+    expect(call.url).toContain("action=reorder_task");
+    expect(call.method).toBe("POST");
+    expect(call.body).toEqual({ id: 7, to: 0, reason: "Blocked release depends on this task" });
+  });
+
+  it("passes through the noop response when the task did not move", async () => {
+    mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({ ok: true, moves_left: 4, noop: true }),
+    ]);
+    const client = makeClient();
+    const res = await client.reorderTask(7, 0, "Already at the top, just checking");
+    expect(res.noop).toBe(true);
+    expect(res.moves_left).toBe(4);
+  });
+
+  it("throws a PaulApiError carrying the no_moves body on 429", async () => {
+    mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({ error: "no_moves", moves_left: 0 }, { status: 429 }),
+    ]);
+    const client = makeClient();
+    const err = await client
+      .reorderTask(7, 0, "Blocked release depends on this task")
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PaulApiError);
+    expect((err as PaulApiError).status).toBe(429);
+    expect((err as PaulApiError).body).toMatchObject({ error: "no_moves", moves_left: 0 });
+  });
+});
+
+describe("PaulClient.redGateAck", () => {
+  const PLAN =
+    "Registrar e iniciar la tarea en PAUL al comenzar el trabajo real y cerrarla al terminar.";
+
+  it("posts { flag_id, qa (hardcoded gate question), plan } to action=red_gate_ack", async () => {
+    const mock = mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({ ok: true, approved: true, message: "Plan aceptado." }),
+    ]);
+    const client = makeClient();
+    const res = await client.redGateAck(12, PLAN);
+    expect(res.ok).toBe(true);
+    expect(res.approved).toBe(true);
+    const call = callInfo(mock, 1);
+    expect(call.url).toContain("action=red_gate_ack");
+    expect(call.method).toBe("POST");
+    expect(call.body).toEqual({
+      flag_id: 12,
+      // The single gate question is hardcoded in lib/ai.php:548.
+      qa: [{ q: "¿Qué vas a hacer para que esto no vuelva a pasar?", a: PLAN }],
+      plan: PLAN,
+    });
+  });
+
+  it("passes through approved:false so the caller can rewrite the plan", async () => {
+    mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({ ok: true, approved: false, message: "El plan es muy vago, sé concreto." }),
+    ]);
+    const client = makeClient();
+    const res = await client.redGateAck(12, PLAN);
+    expect(res.ok).toBe(true);
+    expect(res.approved).toBe(false);
+    expect(res.message).toMatch(/muy vago/);
+  });
+});
+
 describe("PaulClient.submitValidation", () => {
   const QA = [
     { q: "¿Qué se hizo?", a: "Se implementó X en src/foo.ts y pasaron los tests." },

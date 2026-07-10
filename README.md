@@ -17,6 +17,8 @@ verification against the task list.
 | `paul_get_checkpoint` | Get PAUL's 3 validation questions (begins the close flow) |
 | `paul_submit_checkpoint` | Submit answers; returns PAUL's verdict |
 | `paul_register_task` | Register a new task via the chat dialogue, verified against state |
+| `paul_reorder_task` | Move a pending task in the queue (spends 1 of 5 weekly priority moves) |
+| `paul_resolve_red_gate` | Resolve a team-visible red flag with an honest prevention plan |
 | `paul_chat` | Free-form message to PAUL (reorder, pause, ask anything) |
 
 ## Configuration

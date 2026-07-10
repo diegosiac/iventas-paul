@@ -84,6 +84,10 @@ export interface StateResponse {
   moves_left: number;
   ro?: boolean;
   view_admin?: boolean;
+  /** Unresolved team-visible red flag ({ flag_id, reason, title, ... }) awaiting red_gate_ack. */
+  pending_red_gate?: unknown;
+  /** How many red flags the user accumulated this week (visible to the whole team). */
+  red_flags_week?: number;
   [k: string]: unknown;
 }
 
@@ -114,6 +118,21 @@ export interface Verdict {
   red_gate?: unknown;
 }
 
+export interface ReorderResponse {
+  ok: boolean;
+  /** Weekly priority moves remaining after this call (5 per week, reset Monday). */
+  moves_left: number;
+  /** true when the task was already at the target position — no move was spent. */
+  noop?: boolean;
+}
+
+export interface RedGateAckResponse {
+  ok: boolean;
+  /** false means the AI judged the plan not serious enough — rewrite it and retry. */
+  approved: boolean;
+  message?: string;
+}
+
 export interface AssignUndoResponse {
   ok: boolean;
   /** Set when the undo was rejected, e.g. "Ya pasó el tiempo para deshacer." */
@@ -131,6 +150,12 @@ export interface ChatResponse {
   undo_id?: number | null;
   reordered?: boolean;
 }
+
+/**
+ * The single red-gate question, hardcoded server-side in lib/ai.php:548.
+ * red_gate_ack expects it back verbatim in the qa array.
+ */
+export const RED_GATE_QUESTION = "¿Qué vas a hacer para que esto no vuelva a pasar?";
 
 /* ---------- Client ---------- */
 
@@ -236,6 +261,33 @@ export class PaulClient {
   /** POST action=submit_validation with { id, qa: [{ q, a }, ...] }. */
   submitValidation(id: number, qa: QA[]): Promise<Verdict> {
     return this.request<Verdict>("submit_validation", { id, qa });
+  }
+
+  /**
+   * POST action=reorder_task with { id, to, reason } — moves a PENDING task
+   * to a 0-based index within the user's open list (pending+active+waiting
+   * ordered by position). Costs 1 of the 5 weekly priority moves; the API
+   * answers 409 bad_status for non-pending tasks, 422 need_reason without a
+   * reason, and 429 { error: "no_moves", moves_left: 0 } when the weekly
+   * budget is spent (api.php:183-230).
+   */
+  reorderTask(id: number, to: number, reason: string): Promise<ReorderResponse> {
+    return this.request<ReorderResponse>("reorder_task", { id, to, reason });
+  }
+
+  /**
+   * POST action=red_gate_ack with { flag_id, qa, plan } — resolves a
+   * team-visible red flag from a checkpoint verdict. The gate has exactly one
+   * hardcoded question (lib/ai.php:546-577), so the qa array is built here
+   * from the plan; the AI evaluates the plan's seriousness and may answer
+   * { ok: true, approved: false } asking for a more concrete plan.
+   */
+  redGateAck(flagId: number, plan: string): Promise<RedGateAckResponse> {
+    return this.request<RedGateAckResponse>("red_gate_ack", {
+      flag_id: flagId,
+      qa: [{ q: RED_GATE_QUESTION, a: plan }],
+      plan,
+    });
   }
 
   /** POST action=coach_chat with { message }. */
