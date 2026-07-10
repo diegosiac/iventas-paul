@@ -1,0 +1,219 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { vi } from "vitest";
+import { PaulClient, PaulApiError, configFromEnv } from "../src/client.js";
+import { jsonResponse, mockFetchSequence, callInfo, TEST_ENV } from "./helpers.js";
+
+const LOGIN_OK = { ok: true, user: { uid: "u1", name: "Diego", role: "dev" } };
+const STATE_OK = {
+  user: { name: "Diego", role: "dev" },
+  tasks: [],
+  week: { start: "2026-07-06", end: "2026-07-12" },
+  budget: { ok: true },
+  moves_left: 3,
+};
+
+function makeClient(): PaulClient {
+  return new PaulClient(configFromEnv({ ...TEST_ENV }));
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("configFromEnv", () => {
+  it("fails fast listing every missing variable", () => {
+    expect(() => configFromEnv({})).toThrowError(
+      /PAUL_URL.*PAUL_EMAIL.*PAUL_PASSWORD/s,
+    );
+  });
+
+  it("lists only the variables that are actually missing", () => {
+    const err = (() => {
+      try {
+        configFromEnv({ PAUL_URL: "https://x.example", PAUL_EMAIL: "a@b.c" });
+        return null;
+      } catch (e) {
+        return e as Error;
+      }
+    })();
+    expect(err).toBeInstanceOf(Error);
+    const missingList = err!.message.split(".")[0]; // "Missing required environment variables: ..."
+    expect(missingList).toContain("PAUL_PASSWORD");
+    expect(missingList).not.toContain("PAUL_EMAIL");
+    expect(missingList).not.toContain("PAUL_URL");
+  });
+
+  it("strips trailing slashes from PAUL_URL", () => {
+    const cfg = configFromEnv({ ...TEST_ENV, PAUL_URL: "https://x.example/app/" });
+    expect(cfg.url).toBe("https://x.example/app");
+  });
+});
+
+describe("PaulClient auth", () => {
+  it("logs in lazily, captures the session cookie and sends it on later requests", async () => {
+    const mock = mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=abc123; path=/; HttpOnly" }),
+      jsonResponse(STATE_OK),
+    ]);
+    const client = makeClient();
+    const state = await client.state();
+
+    expect(state.user.name).toBe("Diego");
+    expect(mock).toHaveBeenCalledTimes(2);
+
+    const login = callInfo(mock, 0);
+    expect(login.url).toBe("https://paul.example.com/iventas-coach/api.php?action=login");
+    expect(login.method).toBe("POST");
+    expect(login.body).toEqual({ email: "dev@example.com", password: "secret" });
+
+    const stateCall = callInfo(mock, 1);
+    expect(stateCall.url).toBe("https://paul.example.com/iventas-coach/api.php?action=state");
+    expect(stateCall.method).toBe("GET");
+    expect(stateCall.headers["cookie"]).toBe("IVCOACH=abc123");
+  });
+
+  it("re-logins exactly once and retries the request on a 401", async () => {
+    const mock = mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=old" }),
+      jsonResponse(STATE_OK),
+      jsonResponse({ error: "no_auth" }, { status: 401 }),
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=fresh" }),
+      jsonResponse(STATE_OK),
+    ]);
+    const client = makeClient();
+    await client.state(); // primes login + first state
+    const state = await client.state(); // 401 -> re-login -> retry
+
+    expect(state.user.name).toBe("Diego");
+    expect(mock).toHaveBeenCalledTimes(5);
+    expect(callInfo(mock, 3).url).toContain("action=login");
+    expect(callInfo(mock, 4).headers["cookie"]).toBe("IVCOACH=fresh");
+  });
+
+  it("does not retry more than once when auth keeps failing", async () => {
+    const mock = mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({ error: "no_auth" }, { status: 401 }),
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=b" }),
+      jsonResponse({ error: "no_auth" }, { status: 401 }),
+    ]);
+    const client = makeClient();
+    await expect(client.state()).rejects.toThrowError(PaulApiError);
+    expect(mock).toHaveBeenCalledTimes(4);
+  });
+
+  it("surfaces the API message when login is rejected", async () => {
+    mockFetchSequence([
+      jsonResponse(
+        { error: "bad_credentials", message: "Correo o contraseña incorrectos." },
+        { status: 401 },
+      ),
+    ]);
+    const client = makeClient();
+    await expect(client.state()).rejects.toThrowError(/Correo o contraseña incorrectos/);
+  });
+
+  it("throws a PaulApiError carrying the API error body on non-auth errors", async () => {
+    mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse(
+        { error: "order", message: "Esa no toca todavía." },
+        { status: 409 },
+      ),
+    ]);
+    const client = makeClient();
+    const err = await client.startTask(9).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PaulApiError);
+    expect((err as PaulApiError).status).toBe(409);
+    expect((err as PaulApiError).body).toMatchObject({ error: "order" });
+  });
+});
+
+describe("PaulClient actions", () => {
+  it("start_task posts { id } and returns the API payload", async () => {
+    const mock = mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({ ok: true, parallel: 1 }),
+    ]);
+    const client = makeClient();
+    const res = await client.startTask(7);
+    expect(res).toEqual({ ok: true, parallel: 1 });
+    const call = callInfo(mock, 1);
+    expect(call.url).toContain("action=start_task");
+    expect(call.body).toEqual({ id: 7 });
+  });
+
+  it("assign_undo posts { id } and returns the undo verdict", async () => {
+    const mock = mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({ ok: false, message: "Ya pasó el tiempo para deshacer." }),
+    ]);
+    const client = makeClient();
+    const res = await client.assignUndo(43);
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/deshacer/);
+    const call = callInfo(mock, 1);
+    expect(call.url).toContain("action=assign_undo");
+    expect(call.method).toBe("POST");
+    expect(call.body).toEqual({ id: 43 });
+  });
+
+  it("request_questions posts { id } and returns questions with ai flag", async () => {
+    const mock = mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({ questions: ["¿Q1?", "¿Q2?", "¿Q3?"], ai: false, reason: "budget" }),
+    ]);
+    const client = makeClient();
+    const res = await client.requestQuestions(7);
+    expect(res.questions).toHaveLength(3);
+    expect(res.ai).toBe(false);
+    expect(res.reason).toBe("budget");
+    expect(callInfo(mock, 1).body).toEqual({ id: 7 });
+  });
+});
+
+describe("PaulClient.submitValidation", () => {
+  const QA = [
+    { q: "¿Qué se hizo?", a: "Se implementó X en src/foo.ts y pasaron los tests." },
+    { q: "¿Cómo se validó?", a: "npm test en verde y build limpio." },
+    { q: "¿Qué falta?", a: "Nada; el PR #12 quedó mergeado." },
+  ];
+
+  it("posts { id, qa } and returns the approved verdict", async () => {
+    const mock = mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({
+        approved: true,
+        message: "Misión cumplida. ¡Vamos por la siguiente!",
+        ai: true,
+        attempt: 1,
+        offer_review: false,
+      }),
+    ]);
+    const client = makeClient();
+    const verdict = await client.submitValidation(7, QA);
+    expect(verdict.approved).toBe(true);
+    expect(verdict.attempt).toBe(1);
+    expect(verdict.message).toMatch(/Misión cumplida/);
+    const call = callInfo(mock, 1);
+    expect(call.url).toContain("action=submit_validation");
+    expect(call.body).toEqual({ id: 7, qa: QA });
+  });
+
+  it("returns the rejected verdict with PAUL's requested improvement", async () => {
+    mockFetchSequence([
+      jsonResponse(LOGIN_OK, { cookie: "IVCOACH=a" }),
+      jsonResponse({
+        approved: false,
+        message: "Va bien, pero dime qué archivo exacto cambiaste.",
+        ai: true,
+        attempt: 1,
+        offer_review: false,
+      }),
+    ]);
+    const client = makeClient();
+    const verdict = await client.submitValidation(7, QA);
+    expect(verdict.approved).toBe(false);
+    expect(verdict.message).toMatch(/archivo exacto/);
+  });
+});

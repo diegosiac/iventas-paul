@@ -1,0 +1,261 @@
+/**
+ * HTTP client for the PAUL (iVentas COACH) JSON API.
+ *
+ * The backend is a single PHP router: `<base>/api.php?action=...`.
+ * Auth is a PHP session cookie (name IVCOACH) obtained via `action=login`.
+ * Request bodies are JSON (parsed by body_json() in lib/helpers.php);
+ * every response is JSON (json_out()).
+ */
+
+export interface PaulConfig {
+  /** Base URL up to the app folder, e.g. https://example.com/iventas-coach */
+  url: string;
+  email: string;
+  password: string;
+}
+
+/** Reads and validates configuration from environment variables. */
+export function configFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): PaulConfig {
+  const missing: string[] = [];
+  if (!env.PAUL_URL) missing.push("PAUL_URL");
+  if (!env.PAUL_EMAIL) missing.push("PAUL_EMAIL");
+  if (!env.PAUL_PASSWORD) missing.push("PAUL_PASSWORD");
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variables: ${missing.join(", ")}. ` +
+        "Set PAUL_URL (base URL of the PAUL app up to its folder, e.g. " +
+        "https://example.com/iventas-coach), PAUL_EMAIL and PAUL_PASSWORD " +
+        "(the collaborator's login credentials).",
+    );
+  }
+  return {
+    url: (env.PAUL_URL as string).replace(/\/+$/, ""),
+    email: env.PAUL_EMAIL as string,
+    password: env.PAUL_PASSWORD as string,
+  };
+}
+
+/** Error carrying the HTTP status and the parsed JSON error body from the API. */
+export class PaulApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly body: unknown,
+  ) {
+    super(message);
+    this.name = "PaulApiError";
+  }
+}
+
+/* ---------- API response shapes (extracted from api.php) ---------- */
+
+export interface PaulTask {
+  id: number;
+  title: string;
+  type: string;
+  estMin: number;
+  priority: number;
+  status: string; // pending | active | waiting | confirm | review | done
+  mood: string | null;
+  elapsed: number;
+  overdue: boolean;
+  overdueMin: number;
+  overdueLabel: string;
+  overdueKind: string | null;
+  execDelay: number;
+  requesterName: string | null;
+  clientName: string | null;
+  created: string;
+  effMin: number;
+  week: string | null;
+  future: boolean;
+  parallel: number;
+}
+
+export interface StateResponse {
+  user: { name: string; role: string };
+  company?: Record<string, unknown>;
+  tasks: PaulTask[];
+  race?: unknown[];
+  week: { start: string; end: string };
+  budget: { ok: boolean; [k: string]: unknown };
+  moves_left: number;
+  ro?: boolean;
+  view_admin?: boolean;
+  [k: string]: unknown;
+}
+
+export interface StartTaskResponse {
+  ok: boolean;
+  parallel?: number;
+  resumed?: boolean;
+}
+
+export interface QuestionsResponse {
+  questions: string[];
+  /** false means the AI budget/key was unavailable and generic fallback questions were used */
+  ai: boolean;
+  reason?: "no_key" | "budget" | "http_error" | null;
+}
+
+export interface QA {
+  q: string;
+  a: string;
+}
+
+export interface Verdict {
+  approved: boolean;
+  message: string;
+  ai: boolean;
+  attempt: number;
+  offer_review: boolean;
+  red_gate?: unknown;
+}
+
+export interface AssignUndoResponse {
+  ok: boolean;
+  /** Set when the undo was rejected, e.g. "Ya pasó el tiempo para deshacer." */
+  message?: string;
+}
+
+export interface ChatResponse {
+  reply: string;
+  ai: boolean;
+  learned: boolean;
+  mood?: string;
+  assigned?: boolean;
+  assign_preview?: unknown;
+  assign_multi?: unknown;
+  undo_id?: number | null;
+  reordered?: boolean;
+}
+
+/* ---------- Client ---------- */
+
+export class PaulClient {
+  private cookie: string | null = null;
+
+  constructor(
+    private readonly config: PaulConfig,
+    private readonly fetchImpl: typeof fetch = (...args) => globalThis.fetch(...args),
+  ) {}
+
+  private endpoint(action: string): string {
+    return `${this.config.url}/api.php?action=${encodeURIComponent(action)}`;
+  }
+
+  /** Authenticates and captures the IVCOACH session cookie (in memory only). */
+  async login(): Promise<void> {
+    const res = await this.fetchImpl(this.endpoint("login"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: this.config.email, password: this.config.password }),
+    });
+    const setCookies =
+      typeof res.headers.getSetCookie === "function"
+        ? res.headers.getSetCookie()
+        : res.headers.get("set-cookie")
+          ? [res.headers.get("set-cookie") as string]
+          : [];
+    const session = setCookies.find((c) => c.startsWith("IVCOACH=")) ?? setCookies[0];
+    if (session) this.cookie = session.split(";")[0];
+
+    const body = (await res.json().catch(() => null)) as
+      | { ok?: boolean; message?: string; error?: string }
+      | null;
+    if (!res.ok || !body?.ok) {
+      throw new PaulApiError(
+        `PAUL login failed (${res.status}): ${body?.message ?? body?.error ?? "unexpected response"}`,
+        res.status,
+        body,
+      );
+    }
+  }
+
+  /**
+   * Low-level call to api.php. GET when no body is given, POST with a JSON
+   * body otherwise. Logs in lazily on first use; on a 401 / no_auth response
+   * it re-logins once and retries the request once.
+   */
+  async request<T>(action: string, body?: unknown): Promise<T> {
+    if (!this.cookie) await this.login();
+
+    let attempt = await this.doFetch(action, body);
+    if (attempt.noAuth) {
+      await this.login();
+      attempt = await this.doFetch(action, body);
+    }
+    const { res, parsed } = attempt;
+    if (!res.ok) {
+      const b = parsed as { message?: string; error?: string } | null;
+      throw new PaulApiError(
+        `PAUL API error on action=${action} (${res.status}): ${b?.message ?? b?.error ?? "unexpected response"}`,
+        res.status,
+        parsed,
+      );
+    }
+    return parsed as T;
+  }
+
+  private async doFetch(
+    action: string,
+    body?: unknown,
+  ): Promise<{ res: Response; parsed: unknown; noAuth: boolean }> {
+    const headers: Record<string, string> = {};
+    if (this.cookie) headers["Cookie"] = this.cookie;
+    let init: RequestInit = { method: "GET", headers };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      init = { method: "POST", headers, body: JSON.stringify(body) };
+    }
+    const res = await this.fetchImpl(this.endpoint(action), init);
+    const parsed = (await res.json().catch(() => null)) as { error?: string } | null;
+    const noAuth = res.status === 401 || parsed?.error === "no_auth";
+    return { res, parsed, noAuth };
+  }
+
+  /* ---------- Typed wrappers over api.php actions ---------- */
+
+  /** GET action=state — full dashboard state including the user's tasks. */
+  state(): Promise<StateResponse> {
+    return this.request<StateResponse>("state");
+  }
+
+  /** POST action=start_task with { id }. */
+  startTask(id: number): Promise<StartTaskResponse> {
+    return this.request<StartTaskResponse>("start_task", { id });
+  }
+
+  /** POST action=request_questions with { id } — begins the close flow. */
+  requestQuestions(id: number): Promise<QuestionsResponse> {
+    return this.request<QuestionsResponse>("request_questions", { id });
+  }
+
+  /** POST action=submit_validation with { id, qa: [{ q, a }, ...] }. */
+  submitValidation(id: number, qa: QA[]): Promise<Verdict> {
+    return this.request<Verdict>("submit_validation", { id, qa });
+  }
+
+  /** POST action=coach_chat with { message }. */
+  coachChat(message: string): Promise<ChatResponse> {
+    return this.request<ChatResponse>("coach_chat", { message });
+  }
+
+  /**
+   * POST action=assign_undo with { id } — id is the TASK id (the `undo_id`
+   * coach_chat returns is commit_assignment's task_id). The API deletes the
+   * task and answers { ok: true } only while it is not active, the caller is
+   * its requester or assignee, and it is at most 30 seconds old; otherwise it
+   * answers 200 with { ok: false, message }.
+   *
+   * Intentionally NOT wired into the register flow: undo_id only exists on
+   * legitimate self-assign commits (the stale pending_assign hijack path
+   * returns none), so auto-undoing there could only ever delete a task PAUL
+   * really created for the caller.
+   */
+  assignUndo(id: number): Promise<AssignUndoResponse> {
+    return this.request<AssignUndoResponse>("assign_undo", { id });
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "paul-mcp",
+  "version": "1.0.0",
+  "description": "MCP server that lets AI coding agents register and close tasks in PAUL (iVentas COACH)",
+  "type": "module",
+  "bin": {
+    "paul-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepare": "npm run build"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  }
+}
