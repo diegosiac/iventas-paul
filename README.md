@@ -1,4 +1,4 @@
-# paul-mcp
+# iventas-paul
 
 MCP server (stdio) that lets AI coding agents — Claude Code, Codex, OpenCode —
 register and close the user's tasks in **PAUL** (the iVentas COACH task
@@ -32,7 +32,7 @@ The session cookie is kept in memory only; nothing is written to disk.
 ## Per-agent setup
 
 All examples run the server straight from GitHub with
-`npx -y github:GITHUB_USER/paul-mcp` (replace `GITHUB_USER`). Prefer
+`npx -y github:diegosiac/iventas-paul`. Prefer
 **project-scoped** config in your work repos: it keeps personal projects clean —
 agents only see the PAUL tools where they are relevant.
 
@@ -43,7 +43,7 @@ agents only see the PAUL tools where they are relevant.
   "mcpServers": {
     "paul": {
       "command": "npx",
-      "args": ["-y", "github:GITHUB_USER/paul-mcp"],
+      "args": ["-y", "github:diegosiac/iventas-paul"],
       "env": {
         "PAUL_URL": "https://example.com/iventas-coach",
         "PAUL_EMAIL": "you@company.com",
@@ -59,7 +59,7 @@ agents only see the PAUL tools where they are relevant.
 ```toml
 [mcp_servers.paul]
 command = "npx"
-args = ["-y", "github:GITHUB_USER/paul-mcp"]
+args = ["-y", "github:diegosiac/iventas-paul"]
 
 [mcp_servers.paul.env]
 PAUL_URL = "https://example.com/iventas-coach"
@@ -75,7 +75,7 @@ PAUL_PASSWORD = "your-password"
   "mcp": {
     "paul": {
       "type": "local",
-      "command": ["npx", "-y", "github:GITHUB_USER/paul-mcp"],
+      "command": ["npx", "-y", "github:diegosiac/iventas-paul"],
       "environment": {
         "PAUL_URL": "https://example.com/iventas-coach",
         "PAUL_EMAIL": "you@company.com",
@@ -93,7 +93,7 @@ after finishing dev work, answer checkpoints from real session context):
 
 ```sh
 mkdir -p .claude/skills/paul
-cp node_modules/paul-mcp/skills/paul/SKILL.md .claude/skills/paul/
+cp node_modules/iventas-paul/skills/paul/SKILL.md .claude/skills/paul/
 # or copy skills/paul/SKILL.md from a checkout of this repo
 ```
 
